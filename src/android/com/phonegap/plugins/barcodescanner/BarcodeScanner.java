@@ -57,6 +57,15 @@ public class BarcodeScanner extends CordovaPlugin {
     private static final String EMAIL_TYPE = "EMAIL_TYPE";
     private static final String PHONE_TYPE = "PHONE_TYPE";
     private static final String SMS_TYPE = "SMS_TYPE";
+    // divided QR Code meta data.
+    private static final String META = "meta";
+    private static final String TOTAL = "total";
+    private static final String POSITION = "position";
+    private static final String QR_MODE = "mode";
+    private static final String PARITY = "parity";
+    // Divided QRCode Header Masking Nibble
+    private static final char NIBBLE_MASK_HIGHER = 0x0f;
+    private static final char NIBBLE_MASK_LOWER = 0xf0;
 
     private static final String LOG_TAG = "BarcodeScanner";
 
@@ -223,6 +232,15 @@ public class BarcodeScanner extends CordovaPlugin {
                     obj.put(TEXT, intent.getStringExtra("SCAN_RESULT"));
                     obj.put(FORMAT, intent.getStringExtra("SCAN_RESULT_FORMAT"));
                     obj.put(CANCELLED, false);
+
+                    // divided QRCode meta data.
+                    if (intent.getStringExtra("SCAN_RESULT_FORMAT").equals("QR_CODE")) {
+                        byte[] rawBytes = intent.getByteArrayExtra("SCAN_RESULT_BYTES");
+                        JSONObject metaObj = this.extractDividedQrMetaData(rawBytes);
+                        if(metaObj != null){
+                            obj.put(META, metaObj);
+                        }
+                    }
                 } catch (JSONException e) {
                     Log.d(LOG_TAG, "This should never happen");
                 }
@@ -325,4 +343,32 @@ public class BarcodeScanner extends CordovaPlugin {
         this.callbackContext = callbackContext;
     }
 
+    /**
+     * A single data symbol can be divided into up to 16 symbols in QR Code specification.
+     * Divided symbols can be reconstructed as a single data symbol using the same payload , the position number and total count.
+     * @param rawBytes
+     */
+    private JSONObject extractDividedQrMetaData(byte[] rawBytes) {
+        JSONObject obj = new JSONObject();
+        // QRCode Mode
+        int mode = (rawBytes[0] & NIBBLE_MASK_LOWER) >> 4;
+        // mode=3: divided mode
+        if(mode != 3){
+          return null;
+        }
+        try{
+            obj.put(QR_MODE, mode);
+            // QRCode Current No.(ex. 0..15)
+            obj.put(POSITION, (rawBytes[0] & NIBBLE_MASK_HIGHER));
+            // divited QRCode total count.(up to 16)
+            obj.put(TOTAL, ((rawBytes[1] & NIBBLE_MASK_LOWER) >> 4) + 1);
+            // parity.
+            obj.put(PARITY, ((rawBytes[1] & NIBBLE_MASK_HIGHER) << 4) | ((rawBytes[2] & NIBBLE_MASK_LOWER) >> 4));
+
+            return obj;
+        }catch(JSONException e){
+            Log.d(LOG_TAG, "This should never happen");
+        }
+        return null;
+    }
 }

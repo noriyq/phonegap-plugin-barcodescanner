@@ -40,7 +40,7 @@
 - (void)scan:(CDVInvokedUrlCommand*)command;
 - (void)encode:(CDVInvokedUrlCommand*)command;
 - (void)returnImage:(NSString*)filePath format:(NSString*)format callback:(NSString*)callback;
-- (void)returnSuccess:(NSString*)scannedText format:(NSString*)format cancelled:(BOOL)cancelled flipped:(BOOL)flipped callback:(NSString*)callback;
+- (void)returnSuccess:(NSString*)scannedText format:(NSString*)format cancelled:(BOOL)cancelled flipped:(BOOL)flipped meta:(NSDictionary*)metaData callback:(NSString*)callback;
 - (void)returnError:(NSString*)message callback:(NSString*)callback;
 @end
 
@@ -70,7 +70,7 @@
 
 - (id)initWithPlugin:(CDVBarcodeScanner*)plugin callback:(NSString*)callback parentViewController:(UIViewController*)parentViewController alterateOverlayXib:(NSString *)alternateXib;
 - (void)scanBarcode;
-- (void)barcodeScanSucceeded:(NSString*)text format:(NSString*)format;
+- (void)barcodeScanSucceeded:(NSString*)text format:(NSString*)format meta:(NSDictionary*)metaData;
 - (void)barcodeScanFailed:(NSString*)message;
 - (void)barcodeScanCancelled;
 - (void)openDialog;
@@ -250,13 +250,18 @@
 }
 
 //--------------------------------------------------------------------------
-- (void)returnSuccess:(NSString*)scannedText format:(NSString*)format cancelled:(BOOL)cancelled flipped:(BOOL)flipped callback:(NSString*)callback{
+- (void)returnSuccess:(NSString*)scannedText format:(NSString*)format cancelled:(BOOL)cancelled flipped:(BOOL)flipped
+                 meta:(NSDictionary*)metaData callback:(NSString*)callback{
     NSNumber* cancelledNumber = @(cancelled ? 1 : 0);
 
     NSMutableDictionary* resultDict = [NSMutableDictionary new];
     resultDict[@"text"] = scannedText;
     resultDict[@"format"] = format;
     resultDict[@"cancelled"] = cancelledNumber;
+    // divided qr code meta data
+    if( metaData != nil) {
+        resultDict[@"meta"] = metaData;
+    }
 
     CDVPluginResult* result = [CDVPluginResult
                                resultWithStatus: CDVCommandStatus_OK
@@ -415,13 +420,13 @@ parentViewController:(UIViewController*)parentViewController
 }
 
 //--------------------------------------------------------------------------
-- (void)barcodeScanSucceeded:(NSString*)text format:(NSString*)format {
+- (void)barcodeScanSucceeded:(NSString*)text format:(NSString*)format meta:(NSDictionary*)metaData {
     dispatch_sync(dispatch_get_main_queue(), ^{
         if (self.isSuccessBeepEnabled) {
             AudioServicesPlaySystemSound(_soundFileObject);
         }
         [self barcodeScanDone:^{
-            [self.plugin returnSuccess:text format:format cancelled:FALSE flipped:FALSE callback:self.callback];
+            [self.plugin returnSuccess:text format:format cancelled:FALSE flipped:FALSE meta:metaData callback:self.callback];
         }];
     });
 }
@@ -443,7 +448,7 @@ parentViewController:(UIViewController*)parentViewController
 //--------------------------------------------------------------------------
 - (void)barcodeScanCancelled {
     [self barcodeScanDone:^{
-        [self.plugin returnSuccess:@"" format:@"" cancelled:TRUE flipped:self.isFlipped callback:self.callback];
+        [self.plugin returnSuccess:@"" format:@"" cancelled:TRUE flipped:self.isFlipped meta:nil callback:self.callback];
     }];
     if (self.isFlipped) {
         self.isFlipped = NO;
@@ -583,7 +588,7 @@ parentViewController:(UIViewController*)parentViewController
             AVMetadataMachineReadableCodeObject* code = (AVMetadataMachineReadableCodeObject*)[self.previewLayer transformedMetadataObjectForMetadataObject:(AVMetadataMachineReadableCodeObject*)metaData];
 
             if ([self checkResult:code.stringValue]) {
-                [self barcodeScanSucceeded:code.stringValue format:[self formatStringFromMetadata:code]];
+                [self barcodeScanSucceeded:code.stringValue format:[self formatStringFromMetadata:code] meta:[self extractDividedQrMetaData:code]];
             }
         }
     }
@@ -644,6 +649,43 @@ parentViewController:(UIViewController*)parentViewController
     if (self.formats == nil || [supportedFormats containsObject:@"PDF_417"]) [formatObjectTypes addObject:AVMetadataObjectTypePDF417Code];
 
     return formatObjectTypes;
+}
+
+//--------------------------------------------------------------------------
+// A single data symbol can be divided into up to 16 symbols in QR Code specification.
+// Divided symbols can be reconstructed as a single data symbol using the same payload , the position number and total count.
+//--------------------------------------------------------------------------
+- (NSDictionary*) extractDividedQrMetaData:(AVMetadataMachineReadableCodeObject*)code {
+    if (@available(iOS 11.0, *)) {
+        if (code.type == AVMetadataObjectTypeQRCode){
+            CIQRCodeDescriptor *descriptor = (CIQRCodeDescriptor *)code.descriptor;
+            Byte bytes[3];
+            [descriptor.errorCorrectedPayload getBytes:bytes length:3];
+            // nibble masking
+            unsigned char nibbleMaskHigher = 0x0f;
+            unsigned char nibbleMaskLower = 0xf0;
+            // QRCode Mode
+            int qrmode = (bytes[0] & nibbleMaskLower) >> 4;
+            // mode=3: divided QRCode
+            if( qrmode == 3) {
+                // QRCode Position No.(ex. 0..15)
+                int position = bytes[0] & nibbleMaskHigher;
+                // divited QRCode total count.(up to 16)
+                int total = ((bytes[1] & nibbleMaskLower) >> 4) + 1;
+                // parity.
+                int parity = ((bytes[1] & nibbleMaskHigher) << 4) | ((bytes[2] & nibbleMaskHigher) >>4);
+
+                NSDictionary *dict = @{
+                                       @"mode":[NSNumber numberWithInt:qrmode],
+                                       @"position":[NSNumber numberWithInt:position],
+                                       @"total":[NSNumber numberWithInt:total],
+                                       @"parity":[NSNumber numberWithInt:parity]
+                };
+                return dict;
+            }
+        }
+    }
+    return nil;
 }
 
 @end
